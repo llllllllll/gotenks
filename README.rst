@@ -1,6 +1,8 @@
 ``gotenks``
 ===========
 
+|build status|
+
 Stream fusion for Python.
 
 Problem
@@ -215,3 +217,6 @@ License
 
 ``gotenks`` is dual licensed under the terms of the LGPLv3 and the GPLv2. You
 may choose to use ``gotenks`` under the terms of either of these two licenses.
+
+.. |build status| image:: https://travis-ci.org/llllllllll/gotenks.svg?branch=master
+   :target: https://travis-ci.org/llllllllll/gotenks

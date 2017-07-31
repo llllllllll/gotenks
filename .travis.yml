@@ -3,7 +3,7 @@ language: python
 python:
  - "3.4"
  - "3.5"
- - "3.6"
+ # - "3.6"  # enable this when we merge 3.6 support for codetransformer
 
 addons:
   apt:
@@ -22,7 +22,7 @@ before_script:
  - flake8 gotenks
 
 script:
- - py.test gotenks
+ - py.test gotenks --verbose
 
 notifications:
   email: false

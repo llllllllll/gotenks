@@ -5,6 +5,8 @@
 namespace gotenks {
 
 struct module_state {
+    /** A reference to `gotenks.compose.compose`.
+     */
     PyObject* compose;
 };
 
@@ -14,13 +16,49 @@ inline module_state* get_state(PyObject* m) {
     return reinterpret_cast<module_state*>(PyModule_GetState(m));
 }
 
-
 /** The kind of operation associated with this function.
  */
 enum class node_kind {
     map = 0,
     filter = 1,
 };
+
+namespace detail {
+template<typename T>
+inline T& identity(T& a) {
+    return a;
+}
+}  // namespace detail
+
+/** Call a Python function with variadic positional arguments.
+
+    @param function The function to call.
+    @param args The arguments to pass.
+    @return The result of `function(*args)`.
+ */
+template<typename... Args>
+inline PyObject* call_function(PyObject* function, Args... args) {
+#if PY_MINOR_VERSION > 6
+    return PyObject_CallFunctionObjArgs(function, args..., nullptr);
+#else
+    if constexpr (sizeof...(Args) == 1) {
+        // optimization: when we have exactly one argument, don't push it onto
+        // the stack, just pass the address directly to _PyObject_FastCallDict
+        // with nargs=1
+        return _PyObject_FastCallDict(function,
+                                      &detail::identity(args...),
+                                      1,
+                                      nullptr);
+    }
+    else {
+        PyObject* arg_array[] = {args...};
+        return _PyObject_FastCallDict(function,
+                                      arg_array,
+                                      sizeof...(args),
+                                      nullptr);
+    }
+#endif
+}
 
 /** An operation in a fused iterator.
  */
@@ -109,19 +147,37 @@ public:
     /** Apply the function to a given element.
      */
     PyObject* apply(PyObject* element) const {
-        return _PyObject_FastCallDict(m_function,
-                                      &element,
-                                      1,
-                                      nullptr);
+        return call_function(m_function, element);
     }
 };
 
+/** The fused iterator C++ class.
+ */
 struct fused final {
 private:
+    /** The functions to apply in application order.
+
+        Application order is visually reversed from how the code is written,
+        for example:
+
+        ```
+        map(f, map(g, ...))
+        ```
+
+        would result in steps: `{g, f}` because `g` is applied first.
+     */
     std::vector<node> m_steps;
+    /** The underlying Python iterator to draw from.
+     */
     PyObject* m_iter;
 
 public:
+    /** Construct a fused iterator of one step over a Python iterator.
+
+        @param function The function to apply.
+        @param kind The step find.
+        @param iter The Python iterator to draw from.
+     */
     fused(PyObject* function, node_kind kind, PyObject* iter)
         : m_steps({node(function, kind)}),
           m_iter(iter) {
@@ -129,6 +185,14 @@ public:
         Py_INCREF(iter);
     }
 
+    /** Construct a fused iterator which adds a new step to an existing fused
+        iterator.
+
+        @param function The function to apply.
+        @param kind The step find.
+        @param tail The fused iterator to build on.
+        @param compose A reference to the `gotenks.compose.compose` function.
+     */
     fused(PyObject* function,
           node_kind kind,
           const fused& tail,
@@ -140,11 +204,11 @@ public:
 
         node& last = m_steps.back();
         if (kind == node_kind::map && last.kind() == node_kind::map) {
-            PyObject* args[2] = {function, last.function()};
-            PyObject* composed = _PyObject_FastCallDict(compose,
-                                                        args,
-                                                        2,
-                                                        nullptr);
+            // This is the `map(f, map(g, ...))` case. here we fuse our new
+            // map with the old map by constructing a `map(compose(f, g), ...)`.
+            PyObject* composed = call_function(compose,
+                                               function,
+                                               last.function());
             if (composed) {
                 // we successfully composed the old function and the new
                 // function; update the old node in place and exit.
@@ -166,7 +230,12 @@ public:
         Py_DECREF(m_iter);
     }
 
-    /** Interpreted next function.
+    /** Interpreted `__next__` function.
+
+        # Notes
+
+        This is called 'interpreted' because we may want to try jit-compiling
+        the body of this for faster iteration.
      */
     PyObject* interpreted_next() {
         static void* labels[] = {&&map_label, &&filter_label};
@@ -210,6 +279,11 @@ public:
     }
 
     /** Interpreted to_list.
+
+        # Notes
+
+        This is the same as `list(fused_iterator)`; however, we avoid all of the
+        indirect calls in the `list` constructor and just iterate internally.
      */
     PyObject* interpreted_to_list() {
         static void* labels[] = {&&map_label, &&filter_label};
@@ -273,11 +347,15 @@ public:
     }
 };
 
+/** Python box for our fused iterator object.
+ */
 struct object {
     PyObject_HEAD
     fused m_fused;
 };
 
+/** Implementations of the methods for our Python fused iterator type.
+ */
 namespace methods {
 void deallocate(object* self) {
     self->m_fused.~fused();
@@ -387,6 +465,14 @@ PyTypeObject type = {
     methods::methods,                                   // tp_methods,
 };
 
+/** Construct a new Python boxed fused iterator object.
+
+    @tparam kind The kind of step to build.
+    @param compose A reference to `gotenks.compose.compose`.
+    @param function The function to apply.
+    @param tail The iterator to apply to. This should either be a fused
+                iterator to build on or a normal Python iterator.
+ */
 template<node_kind kind>
 inline PyObject* new_fused(PyObject* compose,
                            PyObject* function,
@@ -513,6 +599,10 @@ PyMODINIT_FUNC PyInit_fused() {
         return nullptr;
     }
 
+    // Grab a reference to the `gotenks.compose.compose` function used to
+    // compose mapped functions together. This is written in Python because
+    // it depends on codetransformer and is less performance critical than
+    // the underlying iteration.
     PyObject* module_name = PyUnicode_FromString("gotenks.compose");
     PyObject* compose_module = PyImport_Import(module_name);
     Py_DECREF(module_name);

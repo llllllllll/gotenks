@@ -38,7 +38,7 @@ inline T& identity(T& a) {
  */
 template<typename... Args>
 inline PyObject* call_function(PyObject* function, Args... args) {
-#if PY_MINOR_VERSION > 6
+#if PY_MINOR_VERSION < 6
     return PyObject_CallFunctionObjArgs(function, args..., nullptr);
 #else
     if constexpr (sizeof...(Args) == 1) {

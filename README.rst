@@ -210,7 +210,7 @@ functions together. For 3.6 support, you will need to use `this branch
 soon.
 
 To build ``gotenks`` you will need a C++ compiler capable of compiling
-C++ 17. Only GCC has been tested.
+C++ 17. Only gcc-7 has been tested.
 
 License
 -------

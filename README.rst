@@ -198,6 +198,18 @@ module:
 Here we see the instructions for ``f`` and ``g`` have been merged to create a
 single function which is functionally equivalent to ``f(g(a))``.
 
+Dependencies
+------------
+
+``gotenks`` depends on `codetransformer
+<https://github.com/llllllllll/codetransformer>`_ to efficiently compose
+functions together. For 3.6 support, you will need to use `this branch
+<https://github.com/llllllllll/codetransformer/pull/57>`_ which should be merged
+soon.
+
+To build ``gotenks`` you will need a C++ compiler capable of compiling
+C++ 17. Only GCC has been tested.
+
 License
 -------
 

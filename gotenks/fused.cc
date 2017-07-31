@@ -23,13 +23,6 @@ enum class node_kind {
     filter = 1,
 };
 
-namespace detail {
-template<typename T>
-inline T& identity(T& a) {
-    return a;
-}
-}  // namespace detail
-
 /** Call a Python function with variadic positional arguments.
 
     @param function The function to call.
@@ -41,22 +34,11 @@ inline PyObject* call_function(PyObject* function, Args... args) {
 #if PY_MINOR_VERSION < 6
     return PyObject_CallFunctionObjArgs(function, args..., nullptr);
 #else
-    if constexpr (sizeof...(Args) == 1) {
-        // optimization: when we have exactly one argument, don't push it onto
-        // the stack, just pass the address directly to _PyObject_FastCallDict
-        // with nargs=1
-        return _PyObject_FastCallDict(function,
-                                      &detail::identity(args...),
-                                      1,
-                                      nullptr);
-    }
-    else {
-        PyObject* arg_array[] = {args...};
-        return _PyObject_FastCallDict(function,
-                                      arg_array,
-                                      sizeof...(args),
-                                      nullptr);
-    }
+    PyObject* arg_array[] = {args...};
+    return _PyObject_FastCallDict(function,
+                                  arg_array,
+                                  sizeof...(args),
+                                  nullptr);
 #endif
 }
 

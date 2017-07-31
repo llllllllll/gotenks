@@ -571,7 +571,7 @@ PyMethodDef free_functions[] = {
 void module_dealloc(PyObject* m) {
     module_state* st = get_state(m);
     if (st) {
-        Py_DECREF(st->compose);
+        Py_XDECREF(st->compose);
     }
 }
 

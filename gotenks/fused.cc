@@ -236,6 +236,7 @@ public:
                 goto *labels[static_cast<std::size_t>(step.kind())];
 
             map_label:
+                Py_DECREF(element);
                 element = applied;
                 continue;
             filter_label:

@@ -1,6 +1,14 @@
+#include <optional>
 #include <vector>
 
 #include <Python.h>
+
+#include "gotenks/node.h"
+#include "gotenks/utils.h"
+
+#ifdef GOTENKS_JIT
+#include "gotenks/jit.h"
+#endif
 
 namespace gotenks {
 
@@ -15,123 +23,6 @@ struct module_state {
 inline module_state* get_state(PyObject* m) {
     return reinterpret_cast<module_state*>(PyModule_GetState(m));
 }
-
-/** The kind of operation associated with this function.
- */
-enum class node_kind {
-    map = 0,
-    filter = 1,
-};
-
-/** Call a Python function with variadic positional arguments.
-
-    @param function The function to call.
-    @param args The arguments to pass.
-    @return The result of `function(*args)`.
- */
-template<typename... Args>
-inline PyObject* call_function(PyObject* function, Args... args) {
-#if PY_MINOR_VERSION < 6
-    return PyObject_CallFunctionObjArgs(function, args..., nullptr);
-#else
-    PyObject* arg_array[] = {args...};
-    return _PyObject_FastCallDict(function,
-                                  arg_array,
-                                  sizeof...(args),
-                                  nullptr);
-#endif
-}
-
-/** An operation in a fused iterator.
- */
-struct node final {
-private:
-    /** The function to call on the elements.
-     */
-    PyObject* m_function;
-
-    /** How to interpret the function's result.
-     */
-    node_kind m_kind;
-
-public:
-    /** Construct a new node from a function, a kind, and optionally a tail
-        of operations.
-
-        @param function The function to perform at this step.
-        @param kind The kind of node this is.
-        @param tail The chain of operations which follow this.
-     */
-    node(PyObject* function, node_kind kind)
-        : m_function(function),
-          m_kind(kind) {
-        Py_INCREF(function);
-    }
-
-    node(const node& cpfrom)
-        : m_function(cpfrom.m_function),
-          m_kind(cpfrom.m_kind) {
-        Py_INCREF(m_function);
-    }
-
-    node(node&& mvfrom) noexcept
-        : m_function(mvfrom.m_function),
-          m_kind(mvfrom.m_kind) {
-        mvfrom.m_function = nullptr;
-    }
-
-    node& operator=(const node& cpfrom) {
-        m_function = cpfrom.m_function;
-        Py_INCREF(m_function);
-        m_kind = cpfrom.m_kind;
-
-        return *this;
-    }
-
-    node& operator=(node&& mvfrom) noexcept {
-        m_function = mvfrom.m_function;
-        mvfrom.m_function = nullptr;
-        m_kind = mvfrom.m_kind;
-
-        return *this;
-    }
-
-    ~node() {
-        Py_XDECREF(m_function);
-    }
-
-    inline PyObject* function() {
-        return m_function;
-    }
-
-    inline void function(PyObject* new_function) {
-        Py_XDECREF(m_function);
-        Py_INCREF(new_function);
-        m_function = new_function;
-    }
-
-    inline PyObject* function() const {
-        return m_function;
-    }
-
-    inline node_kind kind() {
-        return m_kind;
-    }
-
-    inline void kind(node_kind new_kind) {
-        m_kind = new_kind;
-    }
-
-    inline node_kind kind() const {
-        return m_kind;
-    }
-
-    /** Apply the function to a given element.
-     */
-    PyObject* apply(PyObject* element) const {
-        return call_function(m_function, element);
-    }
-};
 
 /** The fused iterator C++ class.
  */
@@ -227,7 +118,7 @@ public:
 
         while ((element = PyIter_Next(m_iter))) {
             for (const node& step : m_steps) {
-                PyObject* applied = step.apply(element);
+                PyObject* applied = call_function(step.function(), element);
                 if (!applied) {
                     Py_DECREF(element);
                     return nullptr;
@@ -281,7 +172,7 @@ public:
 
         while ((element = PyIter_Next(m_iter))) {
             for (const node& step : m_steps) {
-                PyObject* applied = step.apply(element);
+                PyObject* applied = call_function(step.function(), element);
                 if (!applied) {
                     Py_DECREF(element);
                     Py_DECREF(out);
@@ -291,6 +182,7 @@ public:
                 goto *labels[static_cast<std::size_t>(step.kind())];
 
             map_label:
+                Py_DECREF(element);
                 element = applied;
                 continue;
             filter_label:
@@ -316,6 +208,19 @@ public:
         return out;
     }
 
+#ifdef GOTENKS_JIT
+    std::optional<jit::next_function> compile() {
+        try {
+            return jit::compile(m_steps);
+        }
+        catch (gccjit::error&) {
+            if (!PyErr_Occurred()) {
+                PyErr_SetString(PyExc_ValueError, "failed to compile");
+            }
+            return std::nullopt;
+        }
+    }
+#endif
 
     inline std::size_t size() {
         return m_steps.size();
@@ -328,14 +233,54 @@ public:
     auto end() {
         return m_steps.end();
     }
+
+    PyObject *iter() {
+        return m_iter;
+    }
 };
+
+struct object;
 
 /** Python box for our fused iterator object.
  */
 struct object {
     PyObject_HEAD
     fused m_fused;
+#ifdef GOTENKS_JIT
+    PyObject* (*m_next)(object*);
+    std::size_t m_counter;
+    jit::next_function m_compiled_next;
+#endif
 };
+
+#ifdef GOTENKS_JIT
+inline PyObject* interpreted_next(object* self) {
+    return self->m_fused.interpreted_next();
+}
+
+PyObject* compiled_next(object* self) {
+    return self->m_compiled_next(self->m_fused.iter());
+}
+
+constexpr std::size_t compile_threshold_steps = 10;
+constexpr Py_ssize_t compile_threshold_size = 50000000;
+
+PyObject* first_next(object* self) {
+    if (self->m_fused.size() < compile_threshold_steps ||
+        PyObject_LengthHint(self->m_fused.iter(), 0) < compile_threshold_size) {
+        self->m_next = interpreted_next;
+        return interpreted_next(self);
+    }
+
+    auto result = self->m_fused.compile();
+    if (!result) {
+        return nullptr;
+    }
+    self->m_compiled_next = std::move(*result);
+    self->m_next = compiled_next;
+    return compiled_next(self);
+}
+#endif
 
 /** Implementations of the methods for our Python fused iterator type.
  */
@@ -346,7 +291,11 @@ void deallocate(object* self) {
 }
 
 PyObject* iternext(object* self) {
+#ifdef GOTENKS_JIT
+    return self->m_next(self);
+#else
     return self->m_fused.interpreted_next();
+#endif
 }
 
 PyDoc_STRVAR(to_list_doc,
@@ -482,6 +431,11 @@ inline PyObject* new_fused(PyObject* compose,
         Py_DECREF(iter);
     }
 
+#if GOTENKS_JIT
+    new(&ret->m_compiled_next) jit::next_function();
+    ret->m_next = first_next;
+    ret->m_counter = 1;
+#endif
     return reinterpret_cast<PyObject*>(ret);
 }
 

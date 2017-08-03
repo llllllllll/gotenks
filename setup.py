@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+import sys
+
 from setuptools import setup, Extension
 
 
@@ -12,6 +14,17 @@ cflags = [
     '-Wno-missing-field-initializers',
     '-std=gnu++17',
 ]
+
+
+sources = ['gotenks/fused.cc']
+include_dirs = ['.']
+libraries = []
+
+if '--enable-jit' in sys.argv:
+    sys.argv.remove('--enable-jit')
+    libraries.append('gccjit')
+    sources.append('gotenks/jit.cc')
+    cflags.append('-DGOTENKS_JIT')
 
 setup(
     name='gotenks',
@@ -40,7 +53,9 @@ setup(
     ext_modules=[
         Extension(
             'gotenks.fused',
-            ['gotenks/fused.cc'],
+            sources,
+            include_dirs=include_dirs,
+            libraries=libraries,
             language='c++',
             extra_compile_args=cflags,
         ),

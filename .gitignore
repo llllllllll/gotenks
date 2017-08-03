@@ -58,3 +58,6 @@ benchmarks.db
 .vagrant
 
 .cache
+
+TAGS
+jitted-src.c
